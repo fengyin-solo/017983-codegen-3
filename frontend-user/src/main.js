@@ -2,6 +2,9 @@ import { AudioAnalyzer } from './modules/audioAnalyzer.js';
 import { ChartManager } from './modules/chartManager.js';
 import { UIController } from './modules/uiController.js';
 import { RecordManager } from './modules/recordManager.js';
+import { BatchQueueStorage } from './modules/batchQueueStorage.js';
+import { BatchQueue, BatchItemStatus } from './modules/batchQueue.js';
+import { BatchQueueUI } from './modules/batchQueueUI.js';
 import { Logger } from './utils/logger.js';
 
 // 初始化日志
@@ -19,6 +22,15 @@ class App {
     this.currentAnalysisResult = null;
     this.currentFileName = '';
     this.selectedRecordId = null;
+
+    // 批量分析队列
+    this.batchQueue = null;
+    this.batchUI = null;
+    // 本次会话已解码的音频缓存，避免查看结果时重复解码
+    this.batchBufferCache = new Map();
+    this.batchDataCache = new Map();
+    // 为队列条目创建的 ObjectURL，移除时释放
+    this.batchObjectUrls = new Map();
   }
 
   async init() {
@@ -27,12 +39,32 @@ class App {
     try {
       // 初始化 AudioContext
       this.audioContext = new (window.AudioContext || window.webkitAudioContext)();
-      
+
       // 初始化模块
       this.audioAnalyzer = new AudioAnalyzer(this.audioContext);
       this.chartManager = new ChartManager();
       this.uiController = new UIController();
       this.recordManager = new RecordManager();
+
+      // 初始化批量队列（存储恢复 + 状态机 + 界面）
+      const batchStorage = new BatchQueueStorage();
+      this.batchQueue = new BatchQueue(batchStorage, {
+        decodeFile: (file) => this.decodeBatchFile(file),
+        analyze: (data, sampleRate, fftSize, onProgress) =>
+          this.audioAnalyzer.analyze(data, sampleRate, fftSize, onProgress)
+      });
+      this.bindBatchQueueEvents();
+      await this.batchQueue.restore();
+      this.batchUI = new BatchQueueUI(this.batchQueue, {
+        onAddFiles: (files) => this.addBatchFiles(files),
+        onStart: () => this.startBatchAnalysis(),
+        onRetry: (id) => this.batchQueue.retryItem(id),
+        onRemove: (id) => this.removeBatchItem(id),
+        onView: (id) => this.viewBatchItem(id),
+        onClearCompleted: () => this.clearBatchCompleted(),
+        onClearAll: () => this.clearBatchAll(),
+        onDismissResume: () => this.batchUI.dismissResume()
+      });
 
       // 绑定事件
       this.bindEvents();
@@ -45,6 +77,231 @@ class App {
       logger.error('应用初始化失败', error);
       alert('应用初始化失败，请刷新页面重试');
     }
+  }
+
+  bindBatchQueueEvents() {
+    this.batchQueue.subscribe((event) => {
+      switch (event.type) {
+        case 'run-start':
+          this.setBatchRunningUI(true);
+          break;
+        case 'run-end': {
+          this.setBatchRunningUI(false);
+          const { processed, succeeded, failed } = event.payload || {};
+          if (processed > 0) {
+            if (failed > 0) {
+              this.uiController.showToast(
+                `批量分析结束：成功 ${succeeded} 条，失败 ${failed} 条，失败项可单独重试`,
+                failed > 0 ? 'warning' : 'success'
+              );
+            } else {
+              this.uiController.showToast(`批量分析全部完成，共 ${succeeded} 条`, 'success');
+            }
+          }
+          break;
+        }
+        case 'item-completed':
+          // 逐条完成即展示最新结果，已完成结果同时已持久化
+          this.handleBatchItemCompleted(event.item, event.payload);
+          break;
+        case 'item-removed':
+          this.invalidateBatchCache(event.item.id);
+          break;
+        case 'cleared':
+          // 清空后统一清理缓存
+          for (const id of [...this.batchObjectUrls.keys()]) {
+            this.invalidateBatchCache(id);
+          }
+          break;
+        default:
+          break;
+      }
+    });
+  }
+
+  /**
+   * 批量分析运行期间禁用相关交互，避免重复触发
+   */
+  setBatchRunningUI(running) {
+    document.body.classList.toggle('batch-running', running);
+
+    const ids = ['analyzeBtn', 'removeFile', 'fftSize', 'startTime', 'endTime'];
+    ids.forEach(id => {
+      const el = document.getElementById(id);
+      if (el) el.disabled = running;
+    });
+
+    const uploadArea = document.getElementById('uploadArea');
+    uploadArea.classList.toggle('is-disabled', running);
+    uploadArea.style.pointerEvents = running ? 'none' : '';
+  }
+
+  async addBatchFiles(files) {
+    const fftSize = parseInt(document.getElementById('fftSize').value);
+    try {
+      const { added, skipped } = await this.batchQueue.addFiles(files, fftSize);
+      if (added > 0) {
+        this.uiController.showToast(`已加入 ${added} 条音频到批量队列`, 'success');
+      }
+      if (skipped > 0) {
+        this.uiController.showToast(`已跳过 ${skipped} 个非音频文件`, 'warning');
+      }
+    } catch (error) {
+      logger.error('添加批量文件失败', error);
+      this.uiController.showToast('添加文件失败：' + (error.message || '存储不可用'), 'error');
+    }
+  }
+
+  async startBatchAnalysis() {
+    if (this.audioContext.state === 'suspended') {
+      try {
+        await this.audioContext.resume();
+      } catch (error) {
+        logger.warn('恢复 AudioContext 失败', error);
+      }
+    }
+    // 开始按钮由队列状态机防重入，重复点击不会触发多次
+    await this.batchQueue.start();
+  }
+
+  decodeBatchFile(file) {
+    return file.arrayBuffer().then(buffer => this.audioContext.decodeAudioData(buffer));
+  }
+
+  handleBatchItemCompleted(item, payload) {
+    if (payload) {
+      if (payload.audioBuffer) this.batchBufferCache.set(item.id, payload.audioBuffer);
+      if (payload.audioData) this.batchDataCache.set(item.id, payload.audioData);
+    }
+    // 自动展示最新完成的分析结果
+    this.presentBatchResult(item, payload ? payload.audioBuffer : null, payload ? payload.audioData : null);
+  }
+
+  /**
+   * 查看队列中已完成条目的分析结果（支持关闭页面后恢复的结果）
+   */
+  async viewBatchItem(id) {
+    const item = this.batchQueue.getItem(id);
+    if (!item || item.status !== BatchItemStatus.SUCCESS || !item.analysisResult) {
+      this.uiController.showToast('该条目暂无分析结果', 'warning');
+      return;
+    }
+
+    let audioBuffer = this.batchBufferCache.get(id) || null;
+    let audioData = this.batchDataCache.get(id) || null;
+
+    // 恢复会话：从 IndexedDB 读取文件 Blob 并解码
+    if (!audioBuffer) {
+      try {
+        this.uiController.showLoading('正在加载音频与分析结果...');
+        const file = await this.batchQueue.storage.getFile(id);
+        if (file) {
+          audioBuffer = await this.decodeBatchFile(file);
+          audioData = audioBuffer.getChannelData(0).slice(0);
+          this.batchBufferCache.set(id, audioBuffer);
+          this.batchDataCache.set(id, audioData);
+        }
+      } catch (error) {
+        logger.error('加载批量结果音频失败', error);
+        this.uiController.showToast('音频文件解码失败，仅展示分析数据', 'warning');
+      } finally {
+        this.uiController.hideLoading();
+      }
+    }
+
+    this.presentBatchResult(item, audioBuffer, audioData);
+  }
+
+  /**
+   * 将队列条目的结果呈现到主图表区与保存区
+   */
+  presentBatchResult(item, audioBuffer, audioData) {
+    const result = item.analysisResult;
+    const sampleRate = item.sampleRate || (audioBuffer ? audioBuffer.sampleRate : 44100);
+    const waveformData = audioData || new Float32Array(1000).fill(0);
+
+    this.currentAnalysisResult = result;
+    this.currentFileName = item.fileName;
+    this.batchViewingItemId = item.id;
+
+    this.chartManager.updateAllCharts(result, waveformData, sampleRate);
+    this.updateFundamentalInfo(result);
+
+    document.getElementById('chartContainer').style.display = 'flex';
+    document.getElementById('emptyState').style.display = 'none';
+
+    // 同步区间显示
+    if (item.durationMs) {
+      const startInput = document.getElementById('startTime');
+      const endInput = document.getElementById('endTime');
+      startInput.max = item.durationMs;
+      endInput.max = item.durationMs;
+      startInput.value = item.startMs || 0;
+      endInput.value = item.endMs || item.durationMs;
+      this.updateRangeSlider();
+    }
+
+    // 支持把批量结果保存为历史记录
+    document.getElementById('saveRecordSection').style.display = 'block';
+    document.getElementById('recordName').value =
+      `${item.fileName} - ${this.recordManager.formatTimestamp()}`;
+    document.getElementById('recordNote').value = '';
+
+    // 如有可用音频，提供播放（从存储获取 Blob；失败不影响图表结果展示）
+    const playerSection = document.getElementById('audioPlayerSection');
+    const player = document.getElementById('audioPlayer');
+    if (audioBuffer) {
+      document.getElementById('totalDuration').textContent = audioBuffer.duration.toFixed(3);
+      playerSection.style.display = 'block';
+      this.batchQueue.storage.getFile(item.id).then(fileBlob => {
+        if (!fileBlob) return;
+        const old = this.batchObjectUrls.get(item.id);
+        if (old) URL.revokeObjectURL(old);
+        const url = URL.createObjectURL(fileBlob);
+        this.batchObjectUrls.set(item.id, url);
+        player.src = url;
+      }).catch(() => {});
+    }
+  }
+
+  invalidateBatchCache(id) {
+    this.batchBufferCache.delete(id);
+    this.batchDataCache.delete(id);
+    const url = this.batchObjectUrls.get(id);
+    if (url) {
+      URL.revokeObjectURL(url);
+      this.batchObjectUrls.delete(id);
+    }
+  }
+
+  async removeBatchItem(id) {
+    this.invalidateBatchCache(id);
+    await this.batchQueue.removeItem(id);
+    this.uiController.showToast('已从队列移除', 'info');
+  }
+
+  async clearBatchCompleted() {
+    const { success } = this.batchQueue.getStats();
+    if (success === 0) return;
+    for (const item of this.batchQueue.items.filter(i => i.status === BatchItemStatus.SUCCESS)) {
+      this.invalidateBatchCache(item.id);
+    }
+    await this.batchQueue.clearCompleted();
+    this.uiController.showToast('已清空完成的任务', 'success');
+  }
+
+  async clearBatchAll() {
+    if (this.batchQueue.running) return;
+    const { total } = this.batchQueue.getStats();
+    if (total === 0) return;
+    if (!confirm('确定要清空整个批量队列吗？已完成的分析结果也会被删除，此操作不可恢复。')) {
+      return;
+    }
+    for (const id of [...this.batchObjectUrls.keys()]) {
+      this.invalidateBatchCache(id);
+    }
+    await this.batchQueue.clearAll();
+    this.uiController.showToast('批量队列已清空', 'info');
   }
 
   bindEvents() {
@@ -93,6 +350,11 @@ class App {
   }
 
   async handleFileUpload(file) {
+    if (this.batchQueue && this.batchQueue.running) {
+      this.uiController.showToast('批量分析进行中，暂时无法更换音频', 'warning');
+      return;
+    }
+
     // 验证文件类型
     if (!file.type.startsWith('audio/')) {
       alert('请上传有效的音频文件');
@@ -239,6 +501,11 @@ class App {
   }
 
   async analyzeAudio() {
+    if (this.batchQueue && this.batchQueue.running) {
+      this.uiController.showToast('批量分析进行中，请等待完成', 'warning');
+      return;
+    }
+
     if (!this.audioBuffer) {
       alert('请先上传音频文件');
       return;

@@ -15,22 +15,29 @@ export class AudioAnalyzer {
    * @param {Float32Array} audioData - 音频采样数据
    * @param {number} sampleRate - 采样率
    * @param {number} fftSize - FFT 大小
-   * @returns {Object} 分析结果
+   * @param {(progress: number, stage?: string) => void} [onProgress] - 阶段进度回调 (0-100)
+   * @returns {Promise<Object>} 分析结果
    */
-  async analyze(audioData, sampleRate, fftSize = 8192) {
+  async analyze(audioData, sampleRate, fftSize = 8192, onProgress = null) {
+    const report = (progress, stage) => {
+      if (typeof onProgress === 'function') onProgress(progress, stage);
+    };
+    const yieldFrame = () => new Promise(resolve => setTimeout(resolve, 0));
+
     logger.info('开始频谱分析', { dataLength: audioData.length, sampleRate, fftSize });
 
+    report(5, '正在执行 FFT 变换...');
     // 执行 FFT 分析
     const frequencyData = this.performFFT(audioData, fftSize);
-    
+
     // 计算频率分辨率
     const frequencyResolution = sampleRate / fftSize;
-    
+
     // 生成频率数组
     const frequencies = [];
     const magnitudes = [];
     const binCount = fftSize / 2;
-    
+
     for (let i = 0; i < binCount; i++) {
       const freq = i * frequencyResolution;
       if (freq > 20 && freq < 20000) { // 人耳可听范围
@@ -39,20 +46,28 @@ export class AudioAnalyzer {
       }
     }
 
+    await yieldFrame();
+    report(25, '正在检测基频...');
     // 检测基频
     const fundamentalFreq = this.detectFundamentalFrequency(audioData, sampleRate, frequencies, magnitudes);
-    
+
     // 计算倍频 (最大13倍)
     const harmonics = this.calculateHarmonics(fundamentalFreq, 13);
-    
+
+    await yieldFrame();
+    report(45, '正在提取倍频数据...');
     // 过滤只保留基频和倍频附近的数据
     const filteredData = this.filterHarmonics(frequencies, magnitudes, fundamentalFreq, harmonics);
-    
+
     // 计算频率区域数据
     const frequencyBands = this.calculateFrequencyBands(fundamentalFreq, harmonics, filteredData);
-    
+
+    await yieldFrame();
+    report(60, '正在计算声强变化...');
     // 计算声强随时间变化的热力图数据
     const heatmapData = this.calculateHeatmapData(audioData, sampleRate, fftSize, fundamentalFreq, harmonics);
+
+    report(100, '分析完成');
 
     // 找出频率范围
     const minFreq = fundamentalFreq * 0.8;

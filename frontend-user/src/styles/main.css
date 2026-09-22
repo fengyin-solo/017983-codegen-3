@@ -118,6 +118,11 @@ body {
   background: #FFE4B5;
 }
 
+.upload-area.is-disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
 .upload-icon {
   font-size: 40px;
   display: block;
@@ -1118,3 +1123,518 @@ body {
     opacity: 0;
   }
 }
+
+/* ===================== 批量分析队列 ===================== */
+/* 批量运行中禁用区间滑块等非按钮交互 */
+body.batch-running .range-slider-container {
+  pointer-events: none;
+  opacity: 0.55;
+}
+
+.batch-queue-panel {
+  margin-bottom: 20px;
+}
+
+.batch-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 15px;
+  padding-bottom: 10px;
+  border-bottom: 2px solid var(--border-color);
+}
+
+.batch-header h3 {
+  font-size: 16px;
+  color: var(--primary-color);
+  margin: 0;
+  padding: 0;
+  border: none;
+}
+
+.batch-toolbar {
+  display: flex;
+  gap: 8px;
+}
+
+.batch-tool-btn {
+  padding: 5px 12px;
+  font-size: 12px;
+  color: var(--text-secondary);
+  background: #FFFAF0;
+  border: 1px solid var(--border-color);
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+  transition: all 0.2s ease;
+}
+
+.batch-tool-btn:hover:not(:disabled) {
+  border-color: var(--primary-color);
+  color: var(--primary-color);
+}
+
+.batch-tool-btn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.batch-tool-danger:hover:not(:disabled) {
+  border-color: var(--error-color);
+  color: var(--error-color);
+}
+
+/* 恢复提示横幅 */
+.batch-resume-banner {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 14px;
+  margin-bottom: 12px;
+  background: #FFF3CD;
+  border: 1px solid #FFE08A;
+  border-radius: var(--radius-md);
+  font-size: 13px;
+  color: #7A5A10;
+}
+
+.batch-resume-icon {
+  font-size: 18px;
+}
+
+.batch-resume-text {
+  flex: 1;
+  min-width: 0;
+}
+
+.batch-resume-btn {
+  padding: 6px 14px;
+  font-size: 13px;
+  font-weight: 600;
+  color: #fff;
+  background: var(--primary-color);
+  border: none;
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.batch-resume-btn:hover {
+  background: var(--primary-light);
+}
+
+.batch-resume-dismiss {
+  padding: 2px 8px;
+  font-size: 12px;
+  color: #7A5A10;
+  background: transparent;
+  border: none;
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+}
+
+.batch-resume-dismiss:hover {
+  background: rgba(0, 0, 0, 0.06);
+}
+
+/* 运行中的加载提示 */
+.batch-loading-banner {
+  display: flex;
+  margin-bottom: 12px;
+}
+
+.batch-loading-text {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  width: 100%;
+  padding: 12px 16px;
+  margin: 0;
+  background: #E8F0FE;
+  border: 1px solid #B5CAF9;
+  border-radius: var(--radius-md);
+  font-size: 13px;
+  color: #1E3A8A;
+}
+
+.batch-loading-detail {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+
+.batch-loading-stage {
+  font-size: 12px;
+  opacity: 0.85;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.batch-loading-spinner {
+  width: 22px;
+  height: 22px;
+  flex-shrink: 0;
+  border: 3px solid rgba(30, 58, 138, 0.2);
+  border-top-color: #1E3A8A;
+  border-radius: 50%;
+  animation: spin 0.9s linear infinite;
+}
+
+/* 整体进度 */
+.batch-overall {
+  margin-bottom: 14px;
+}
+
+.batch-overall-track {
+  height: 12px;
+  background: #F0E4D0;
+  border-radius: 6px;
+  overflow: hidden;
+}
+
+.batch-overall-fill {
+  height: 100%;
+  background: linear-gradient(90deg, var(--primary-color), var(--secondary-color));
+  border-radius: 6px;
+  transition: width 0.25s ease;
+}
+
+.batch-overall-meta {
+  display: flex;
+  justify-content: space-between;
+  margin-top: 6px;
+  font-size: 12px;
+  color: var(--text-secondary);
+}
+
+.batch-overall-meta strong {
+  color: var(--primary-color);
+}
+
+/* 添加文件区域 */
+.batch-add-area {
+  border: 2px dashed var(--border-color);
+  border-radius: var(--radius-md);
+  padding: 20px;
+  text-align: center;
+  cursor: pointer;
+  transition: all 0.25s ease;
+  background: #FFFAF0;
+  margin-bottom: 12px;
+}
+
+.batch-add-area:hover,
+.batch-add-area.dragover {
+  border-color: var(--primary-color);
+  background: #FFF8DC;
+}
+
+.batch-add-area.is-disabled {
+  opacity: 0.55;
+  pointer-events: none;
+}
+
+.batch-add-icon {
+  font-size: 32px;
+  display: block;
+  margin-bottom: 6px;
+}
+
+.batch-add-placeholder p {
+  color: var(--text-secondary);
+  font-size: 13px;
+  margin: 4px 0;
+}
+
+.batch-add-hint {
+  font-size: 12px !important;
+  opacity: 0.75;
+}
+
+.batch-add-btn {
+  margin-top: 10px;
+  padding: 8px 20px;
+  font-size: 14px;
+  font-weight: 600;
+  color: #fff;
+  background: linear-gradient(135deg, var(--primary-color), var(--primary-light));
+  border: none;
+  border-radius: var(--radius-md);
+  cursor: pointer;
+}
+
+.batch-add-btn:hover:not(:disabled) {
+  transform: translateY(-1px);
+  box-shadow: var(--shadow-sm);
+}
+
+/* 开始批量分析按钮 */
+.batch-start-btn {
+  width: 100%;
+  padding: 12px 18px;
+  margin-bottom: 14px;
+  background: linear-gradient(135deg, #2E7D32, #4CAF50);
+  color: white;
+  border: none;
+  border-radius: var(--radius-md);
+  font-size: 15px;
+  font-weight: 600;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  transition: all 0.25s ease;
+}
+
+.batch-start-btn:hover:not(:disabled) {
+  transform: translateY(-1px);
+  box-shadow: var(--shadow-sm);
+}
+
+.batch-start-btn:disabled {
+  background: #BDBDBD;
+  cursor: not-allowed;
+}
+
+/* 队列条目 */
+.batch-list {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  max-height: 480px;
+  overflow-y: auto;
+  padding-right: 4px;
+}
+
+.batch-item {
+  border: 1px solid var(--border-color);
+  border-radius: var(--radius-md);
+  padding: 12px 14px;
+  background: #FFFEFB;
+}
+
+.batch-item-status-running {
+  border-color: var(--secondary-color);
+  background: #FFF8EE;
+}
+
+.batch-item-status-success {
+  border-color: #A5D6A7;
+  background: #F4FBF4;
+}
+
+.batch-item-status-error {
+  border-color: #EF9A9A;
+  background: #FDF5F5;
+}
+
+.batch-item-main {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+}
+
+.batch-item-status-dot {
+  width: 10px;
+  height: 10px;
+  margin-top: 5px;
+  border-radius: 50%;
+  background: #BDBDBD;
+  flex-shrink: 0;
+}
+
+.batch-item-status-running .batch-item-status-dot {
+  background: var(--warning-color);
+  animation: batchPulse 1s ease-in-out infinite;
+}
+
+.batch-item-status-success .batch-item-status-dot {
+  background: var(--success-color);
+}
+
+.batch-item-status-error .batch-item-status-dot {
+  background: var(--error-color);
+}
+
+@keyframes batchPulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.35; }
+}
+
+.batch-item-info {
+  flex: 1;
+  min-width: 0;
+}
+
+.batch-item-name {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text-primary);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.batch-item-meta {
+  font-size: 11px;
+  color: var(--text-secondary);
+  margin-top: 2px;
+}
+
+.batch-item-detail {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-top: 8px;
+  flex-wrap: wrap;
+}
+
+.batch-item-stage {
+  font-size: 12px;
+  color: var(--text-secondary);
+}
+
+.batch-item-result {
+  font-size: 12px;
+  color: var(--text-secondary);
+}
+
+.batch-item-result strong {
+  color: var(--primary-color);
+}
+
+.batch-item-error-msg {
+  font-size: 12px;
+  color: var(--error-color);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  max-width: 100%;
+}
+
+.batch-item-progress {
+  flex: 1;
+  min-width: 120px;
+  height: 8px;
+  background: #EADFCB;
+  border-radius: 4px;
+  overflow: hidden;
+}
+
+.batch-item-progress-fill {
+  height: 100%;
+  background: linear-gradient(90deg, var(--secondary-color), var(--primary-light));
+  border-radius: 4px;
+  transition: width 0.2s ease;
+}
+
+.batch-item-side {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 6px;
+  flex-shrink: 0;
+}
+
+.batch-item-status {
+  font-size: 11px;
+  font-weight: 600;
+  padding: 2px 8px;
+  border-radius: 10px;
+  background: #EFEBE3;
+  color: var(--text-secondary);
+  white-space: nowrap;
+}
+
+.batch-item-status.batch-item-status-running {
+  background: #FFF0D6;
+  color: #B36B00;
+}
+
+.batch-item-status.batch-item-status-success {
+  background: #E2F3E3;
+  color: #2E7D32;
+}
+
+.batch-item-status.batch-item-status-error {
+  background: #FDECEA;
+  color: #C62828;
+}
+
+.batch-item-actions {
+  display: flex;
+  gap: 6px;
+}
+
+.batch-item-btn {
+  padding: 3px 9px;
+  font-size: 12px;
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--border-color);
+  background: #fff;
+  color: var(--text-secondary);
+  cursor: pointer;
+  transition: all 0.2s ease;
+}
+
+.batch-item-btn:hover:not(:disabled) {
+  border-color: var(--primary-color);
+  color: var(--primary-color);
+}
+
+.batch-item-btn:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
+.batch-item-retry {
+  border-color: #FFB74D;
+  color: #E65100;
+  background: #FFF8F0;
+}
+
+.batch-item-retry:hover:not(:disabled) {
+  background: #FFEFD6;
+}
+
+.batch-item-view {
+  border-color: #81C784;
+  color: #2E7D32;
+  background: #F5FBF5;
+}
+
+.batch-item-view:hover:not(:disabled) {
+  background: #E6F4E7;
+}
+
+/* 空队列说明 */
+.batch-empty {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  text-align: center;
+  padding: 24px 16px;
+  color: var(--text-secondary);
+  background: #FFFAF0;
+  border-radius: var(--radius-md);
+}
+
+.batch-empty-icon {
+  font-size: 36px;
+  margin-bottom: 8px;
+}
+
+.batch-empty p {
+  font-size: 13px;
+  margin: 2px 0;
+}
+
+.batch-empty-hint {
+  font-size: 12px !important;
+  opacity: 0.8;
+  line-height: 1.7;
+}
+

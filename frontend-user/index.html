@@ -145,6 +145,67 @@
 
       <!-- 右侧图表区域 -->
       <div class="chart-area">
+        <!-- 批量分析队列 -->
+        <section class="chart-section batch-queue-panel" id="batchQueuePanel">
+          <div class="batch-header">
+            <h3>批量分析队列</h3>
+            <div class="batch-toolbar">
+              <button class="batch-tool-btn" id="batchClearCompletedBtn" title="清空已完成的任务">清空已完成</button>
+              <button class="batch-tool-btn batch-tool-danger" id="batchClearAllBtn" title="清空整个队列">清空队列</button>
+            </div>
+          </div>
+
+          <!-- 关闭页面后回来的恢复提示 -->
+          <div class="batch-resume-banner" id="batchResumeBanner" style="display: none;">
+            <span class="batch-resume-icon">💾</span>
+            <span class="batch-resume-text" id="batchResumeText"></span>
+            <button class="batch-resume-btn" id="batchResumeBtn">继续分析</button>
+            <button class="batch-resume-dismiss" id="batchResumeDismiss" title="关闭提示">✕</button>
+          </div>
+
+          <!-- 运行中的加载提示 -->
+          <div class="batch-loading-banner" id="batchLoadingBanner" style="display: none;">
+            <p class="batch-loading-text" id="batchLoadingText"></p>
+          </div>
+
+          <!-- 整体进度 -->
+          <div class="batch-overall" id="batchOverall" style="display: none;">
+            <div class="batch-overall-track">
+              <div class="batch-overall-fill" id="batchOverallFill" style="width: 0%"></div>
+            </div>
+            <div class="batch-overall-meta">
+              <span id="batchOverallCount">共 0 条</span>
+              <strong id="batchOverallText">0%</strong>
+            </div>
+          </div>
+
+          <!-- 批量文件选择 -->
+          <div class="batch-add-area" id="batchAddArea">
+            <input type="file" id="batchAudioInput" accept="audio/*" multiple hidden>
+            <div class="batch-add-placeholder">
+              <span class="batch-add-icon">🎶</span>
+              <p><strong>一次选择多条音频加入队列</strong>（支持按住 Ctrl / Shift 多选，或直接拖入多个文件）</p>
+              <p class="batch-add-hint">队列将按顺序逐条自动分析，失败的条目可单独重试，不影响其他任务</p>
+              <button type="button" class="batch-add-btn" id="batchAddBtn">选择音频文件</button>
+            </div>
+          </div>
+
+          <button class="batch-start-btn" id="batchStartBtn" disabled>
+            <span class="btn-icon">🚀</span>
+            开始批量分析
+          </button>
+
+          <!-- 队列条目 -->
+          <div class="batch-list" id="batchList" style="display: none;"></div>
+
+          <!-- 空队列说明 -->
+          <div class="batch-empty" id="batchEmpty">
+            <span class="batch-empty-icon">📭</span>
+            <p>队列为空</p>
+            <p class="batch-empty-hint">点击上方区域添加多条音频，添加后点击"开始批量分析"即可逐条自动处理。<br>队列进度与已完成结果会自动保存，中途关闭页面再回来仍可恢复。</p>
+          </div>
+        </section>
+
         <div class="chart-container" id="chartContainer" style="display: none;">
           <!-- 波形图 -->
           <section class="chart-section waveform-section">
