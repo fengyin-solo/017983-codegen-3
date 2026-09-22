@@ -2,6 +2,7 @@ import { AudioAnalyzer } from './modules/audioAnalyzer.js';
 import { ChartManager } from './modules/chartManager.js';
 import { UIController } from './modules/uiController.js';
 import { RecordManager } from './modules/recordManager.js';
+import { BatchQueueManager, BatchStatus } from './modules/batchQueueManager.js';
 import { Logger } from './utils/logger.js';
 
 // 初始化日志
@@ -14,6 +15,8 @@ class App {
     this.chartManager = null;
     this.uiController = null;
     this.recordManager = null;
+    this.batchQueue = null;
+    this.batchRunning = false;
     this.audioBuffer = null;
     this.audioContext = null;
     this.currentAnalysisResult = null;
@@ -34,11 +37,27 @@ class App {
       this.uiController = new UIController();
       this.recordManager = new RecordManager();
 
+      // 初始化批量分析队列（从 IndexedDB 恢复上次未完成的队列）
+      this.batchQueue = new BatchQueueManager();
+      await this.batchQueue.init();
+      this.batchQueue.onChange((event) => this.handleBatchEvent(event));
+
       // 绑定事件
       this.bindEvents();
 
       // 加载历史记录列表
       this.updateRecordsList();
+
+      // 恢复批量队列界面
+      this.renderBatchQueue();
+      const batchSummary = this.batchQueue.getSummary();
+      if (batchSummary.total > 0) {
+        const parts = [];
+        if (batchSummary.done > 0) parts.push(`${batchSummary.done} 条已完成`);
+        if (batchSummary.failed > 0) parts.push(`${batchSummary.failed} 条失败`);
+        if (batchSummary.pending > 0) parts.push(`${batchSummary.pending} 条待分析`);
+        this.uiController.showToast(`已恢复上次的批量分析队列（${parts.join('，')}）`, 'info');
+      }
 
       logger.info('应用初始化完成');
     } catch (error) {
@@ -87,6 +106,9 @@ class App {
     // 分析按钮
     const analyzeBtn = document.getElementById('analyzeBtn');
     analyzeBtn.addEventListener('click', () => this.analyzeAudio());
+
+    // 批量分析队列事件
+    this.bindBatchEvents();
 
     // 记录相关事件
     this.bindRecordEvents();
@@ -277,15 +299,15 @@ class App {
       // 保存当前分析结果
       this.currentAnalysisResult = analysisResult;
 
+      // 先显示图表区域再绘图，否则容器隐藏时 canvas 尺寸计算为 0（热力图无法正确绘制）
+      document.getElementById('chartContainer').style.display = 'flex';
+      document.getElementById('emptyState').style.display = 'none';
+
       // 更新图表
       this.chartManager.updateAllCharts(analysisResult, selectedData, this.audioBuffer.sampleRate);
 
       // 更新基频信息
       this.updateFundamentalInfo(analysisResult);
-
-      // 显示图表区域
-      document.getElementById('chartContainer').style.display = 'flex';
-      document.getElementById('emptyState').style.display = 'none';
 
       // 显示保存记录区域
       document.getElementById('saveRecordSection').style.display = 'block';
@@ -311,6 +333,410 @@ class App {
         <span class="harmonic-freq">${h.toFixed(1)} Hz</span>
       </div>
     `).join('');
+  }
+
+  /* ================= 批量分析队列 ================= */
+
+  bindBatchEvents() {
+    const panel = document.getElementById('batchQueuePanel');
+    const addBtn = document.getElementById('batchAddBtn');
+    const fileInput = document.getElementById('batchFileInput');
+    const startBtn = document.getElementById('batchStartBtn');
+    const clearDoneBtn = document.getElementById('batchClearDoneBtn');
+    const clearAllBtn = document.getElementById('batchClearAllBtn');
+    const listEl = document.getElementById('batchList');
+
+    // 一次挑选多条音频加入队列
+    addBtn.addEventListener('click', () => fileInput.click());
+    fileInput.addEventListener('change', (e) => {
+      if (e.target.files.length > 0) {
+        this.addBatchFiles(e.target.files);
+      }
+      fileInput.value = '';
+    });
+
+    // 拖拽多个文件到队列面板
+    panel.addEventListener('dragover', (e) => {
+      e.preventDefault();
+      if (!this.batchRunning) {
+        panel.classList.add('dragover');
+      }
+    });
+    panel.addEventListener('dragleave', () => panel.classList.remove('dragover'));
+    panel.addEventListener('drop', (e) => {
+      e.preventDefault();
+      panel.classList.remove('dragover');
+      if (e.dataTransfer.files.length > 0) {
+        this.addBatchFiles(e.dataTransfer.files);
+      }
+    });
+
+    // 队列控制
+    startBtn.addEventListener('click', () => this.startBatchQueue());
+    clearDoneBtn.addEventListener('click', async () => {
+      if (this.batchRunning) return;
+      const removed = await this.batchQueue.clearCompleted();
+      this.uiController.showToast(
+        removed > 0 ? `已清除 ${removed} 条已完成的任务` : '没有已完成的任务',
+        removed > 0 ? 'success' : 'info'
+      );
+    });
+    clearAllBtn.addEventListener('click', async () => {
+      if (this.batchRunning) return;
+      if (this.batchQueue.getItems().length === 0) return;
+      if (confirm('确定要清空整个分析队列吗？已完成的结果也会被删除。')) {
+        await this.batchQueue.clearAll();
+        this.uiController.showToast('队列已清空', 'success');
+      }
+    });
+
+    // 队列项操作（事件委托：重试 / 移除 / 查看结果）
+    listEl.addEventListener('click', (e) => {
+      const btn = e.target.closest('[data-action]');
+      if (!btn || btn.disabled) return;
+      const itemEl = btn.closest('.batch-item');
+      const id = itemEl ? itemEl.dataset.id : null;
+      if (!id) return;
+      const action = btn.dataset.action;
+      if (action === 'retry') this.retryBatchItem(id);
+      else if (action === 'remove') this.removeBatchItem(id);
+      else if (action === 'view') this.viewBatchResult(id);
+    });
+  }
+
+  async addBatchFiles(files) {
+    if (this.batchRunning) {
+      this.uiController.showToast('批量分析运行中，请等待当前队列完成后再添加', 'warning');
+      return;
+    }
+    if (!files || files.length === 0) return;
+
+    const fftSize = parseInt(document.getElementById('fftSize').value);
+    const { added, skipped, oversized, failed } = await this.batchQueue.addFiles(files, { fftSize });
+
+    const messages = [];
+    if (added > 0) messages.push(`已加入 ${added} 条`);
+    if (skipped > 0) messages.push(`跳过 ${skipped} 个非音频文件`);
+    if (oversized > 0) messages.push(`跳过 ${oversized} 个超大文件`);
+    if (failed > 0) messages.push(`${failed} 个文件加入失败`);
+    this.uiController.showToast(messages.join('，') || '没有可加入的文件', added > 0 ? 'success' : 'warning');
+
+    if (added > 0 && !this.batchQueue.persistent) {
+      this.uiController.showToast('当前浏览器环境不支持持久化存储，刷新页面后队列将无法恢复', 'warning');
+    }
+  }
+
+  handleBatchEvent(event) {
+    if (event.type === 'progress') {
+      // 单条进度：只更新对应进度条与整体进度，避免频繁重绘列表
+      this.updateBatchProgressDOM(event.id, event.progress);
+    } else {
+      this.renderBatchQueue();
+    }
+  }
+
+  /**
+   * 启动队列：逐条自动分析，单条失败不中断后续任务
+   */
+  async startBatchQueue() {
+    if (this.batchRunning) return;
+    if (!this.batchQueue.getNextPending()) {
+      this.uiController.showToast('队列中没有待分析的任务', 'info');
+      return;
+    }
+
+    logger.info('开始批量分析队列');
+    this.batchRunning = true;
+    this.setBatchRunningUI(true);
+
+    const summary = { done: 0, failed: 0 };
+    try {
+      let item;
+      while ((item = this.batchQueue.getNextPending())) {
+        const success = await this.processBatchItem(item);
+        if (success) summary.done++;
+        else summary.failed++;
+      }
+    } finally {
+      this.batchRunning = false;
+      this.setBatchRunningUI(false);
+    }
+
+    logger.info('批量分析队列结束', summary);
+    if (summary.failed > 0) {
+      this.uiController.showToast(`批量分析完成：${summary.done} 条成功，${summary.failed} 条失败（可在队列中单独重试）`, 'warning');
+    } else {
+      this.uiController.showToast(`批量分析完成：${summary.done} 条全部成功`, 'success');
+    }
+  }
+
+  /**
+   * 分析单条队列任务，失败时标记并返回 false，不抛出异常
+   */
+  async processBatchItem(item) {
+    const items = this.batchQueue.getItems();
+    const index = items.findIndex(i => i.id === item.id) + 1;
+    this.updateBatchStatusText(`正在分析 (${index}/${items.length})：${item.fileName}`);
+    this.batchQueue.updateItem(item.id, {
+      status: BatchStatus.ANALYZING,
+      progress: 2,
+      error: null,
+      interrupted: false
+    });
+
+    try {
+      // 读取文件数据
+      const blob = await this.batchQueue.getFileData(item.id);
+      if (!blob) {
+        throw new Error('文件数据已丢失，请移除后重新添加');
+      }
+      this.batchQueue.updateItem(item.id, { progress: 8 }, { persist: false, progressEvent: true });
+
+      // 解码音频
+      const arrayBuffer = await blob.arrayBuffer();
+      const audioBuffer = await this.audioContext.decodeAudioData(arrayBuffer);
+      this.batchQueue.updateItem(item.id, { progress: 15, duration: audioBuffer.duration });
+
+      // 逐条分析（带进度回调，分析期间让出主线程以刷新界面）
+      const channelData = audioBuffer.getChannelData(0);
+      const fftSize = (item.params && item.params.fftSize) || parseInt(document.getElementById('fftSize').value);
+      const result = await this.audioAnalyzer.analyze(
+        channelData,
+        audioBuffer.sampleRate,
+        fftSize,
+        (p) => {
+          this.batchQueue.updateItem(item.id, { progress: 15 + Math.round(p * 80) }, { persist: false, progressEvent: true });
+        }
+      );
+
+      // 保存分析结果
+      this.batchQueue.updateItem(item.id, { progress: 97 }, { persist: false, progressEvent: true });
+      this.batchQueue.updateItem(item.id, {
+        status: BatchStatus.DONE,
+        progress: 100,
+        result,
+        error: null
+      });
+      // 结果已保存，释放原始音频数据占用的存储空间
+      await this.batchQueue.discardFile(item.id);
+
+      logger.info('批量任务分析完成', { fileName: item.fileName, fundamentalFreq: result.fundamentalFreq });
+      return true;
+    } catch (error) {
+      // 单条失败：标记出来，由队列继续处理后续任务
+      logger.error('批量任务分析失败', { fileName: item.fileName, message: error.message });
+      this.batchQueue.updateItem(item.id, {
+        status: BatchStatus.FAILED,
+        error: error.message || '分析失败'
+      });
+      return false;
+    }
+  }
+
+  /**
+   * 单独重试某条失败的任务
+   */
+  async retryBatchItem(id) {
+    if (this.batchRunning) return;
+    const item = this.batchQueue.getItem(id);
+    if (!item || item.status !== BatchStatus.FAILED) return;
+
+    logger.info('单独重试批量任务', { fileName: item.fileName });
+    this.batchQueue.updateItem(id, { status: BatchStatus.PENDING, progress: 0, error: null });
+
+    this.batchRunning = true;
+    this.setBatchRunningUI(true);
+    try {
+      const success = await this.processBatchItem(this.batchQueue.getItem(id));
+      const latest = this.batchQueue.getItem(id);
+      if (success) {
+        this.uiController.showToast(`「${item.fileName}」重试成功`, 'success');
+      } else {
+        this.uiController.showToast(`「${item.fileName}」重试失败：${latest ? latest.error : ''}`, 'error');
+      }
+    } finally {
+      this.batchRunning = false;
+      this.setBatchRunningUI(false);
+    }
+  }
+
+  async removeBatchItem(id) {
+    if (this.batchRunning) return;
+    const item = this.batchQueue.getItem(id);
+    if (!item) return;
+    await this.batchQueue.removeItem(id);
+    this.uiController.showToast(`已移除「${item.fileName}」`, 'info');
+  }
+
+  /**
+   * 查看已完成任务的分析结果（加载到图表区域，可另存为记录）
+   */
+  viewBatchResult(id) {
+    const item = this.batchQueue.getItem(id);
+    if (!item || item.status !== BatchStatus.DONE || !item.result) return;
+
+    this.currentAnalysisResult = item.result;
+    this.currentFileName = item.fileName;
+
+    // 先显示图表区域再绘图，否则容器隐藏时 canvas 尺寸计算为 0（热力图无法正确绘制）
+    document.getElementById('chartContainer').style.display = 'flex';
+    document.getElementById('emptyState').style.display = 'none';
+
+    // 与"应用历史记录"一致：结果中不含原始波形，波形图使用占位数据
+    const fakeAudioData = new Float32Array(1000).fill(0);
+    this.chartManager.updateAllCharts(item.result, fakeAudioData, 44100);
+    this.updateFundamentalInfo(item.result);
+
+    document.getElementById('saveRecordSection').style.display = 'block';
+    document.getElementById('recordName').value = `${item.fileName} - ${this.recordManager.formatTimestamp()}`;
+    document.getElementById('recordNote').value = '';
+
+    this.uiController.showToast(`已加载「${item.fileName}」的分析结果`, 'success');
+  }
+
+  /**
+   * 批量运行期间：给出清楚的加载提示，并禁用按钮等交互元素，避免重复触发
+   */
+  setBatchRunningUI(running) {
+    document.body.classList.toggle('batch-running', running);
+
+    // 禁用/恢复单条分析相关交互
+    document.getElementById('analyzeBtn').disabled = running || !this.audioBuffer;
+    document.getElementById('fftSize').disabled = running;
+    document.getElementById('startTime').disabled = running;
+    document.getElementById('endTime').disabled = running;
+
+    // 运行状态提示
+    document.getElementById('batchRunningStatus').style.display = running ? 'flex' : 'none';
+    if (!running) {
+      this.updateBatchStatusText('');
+    }
+
+    // 刷新队列内按钮的禁用状态
+    this.renderBatchQueue();
+  }
+
+  updateBatchStatusText(text) {
+    document.getElementById('batchStatusText').textContent = text;
+  }
+
+  updateBatchProgressDOM(id, progress) {
+    const itemEl = document.querySelector(`.batch-item[data-id="${id}"]`);
+    if (itemEl) {
+      const fill = itemEl.querySelector('.batch-item-progress-fill');
+      if (fill) {
+        fill.style.width = `${progress}%`;
+      }
+    }
+    // 整体进度条同步推进
+    this.renderBatchOverall();
+  }
+
+  renderBatchOverall() {
+    const summary = this.batchQueue.getSummary();
+    const overallEl = document.getElementById('batchOverall');
+
+    if (summary.total === 0) {
+      overallEl.style.display = 'none';
+      return;
+    }
+    overallEl.style.display = 'block';
+
+    const parts = [`总进度 ${summary.done + summary.failed}/${summary.total}`];
+    if (summary.failed > 0) parts.push(`${summary.failed} 条失败`);
+    if (summary.pending > 0) parts.push(`${summary.pending} 条待分析`);
+    document.getElementById('batchOverallText').textContent = parts.join(' · ');
+    document.getElementById('batchOverallPercent').textContent = `${summary.overall}%`;
+
+    const fill = document.getElementById('batchOverallFill');
+    fill.style.width = `${summary.overall}%`;
+    fill.classList.toggle('complete', summary.pending === 0 && summary.analyzing === 0);
+  }
+
+  renderBatchQueue() {
+    const items = this.batchQueue.getItems();
+    const summary = this.batchQueue.getSummary();
+    const running = this.batchRunning;
+
+    const listEl = document.getElementById('batchList');
+    const emptyEl = document.getElementById('batchEmpty');
+    const footerEl = document.getElementById('batchFooter');
+
+    if (items.length === 0) {
+      // 空队列：显示说明
+      listEl.style.display = 'none';
+      emptyEl.style.display = 'flex';
+      footerEl.style.display = 'none';
+    } else {
+      listEl.style.display = 'flex';
+      emptyEl.style.display = 'none';
+      footerEl.style.display = 'flex';
+      listEl.innerHTML = items.map(item => this.renderBatchItem(item)).join('');
+    }
+
+    this.renderBatchOverall();
+
+    // 控制按钮状态（运行中全部禁用，避免重复触发）
+    document.getElementById('batchAddBtn').disabled = running;
+    document.getElementById('batchStartBtn').disabled = running || summary.pending === 0;
+    document.getElementById('batchClearDoneBtn').disabled = running || summary.done === 0;
+    document.getElementById('batchClearAllBtn').disabled = running || items.length === 0;
+  }
+
+  renderBatchItem(item) {
+    const statusMap = {
+      [BatchStatus.PENDING]: { text: item.interrupted ? '等待中 · 已恢复' : '等待中', className: 'pending' },
+      [BatchStatus.ANALYZING]: { text: '分析中', className: 'analyzing' },
+      [BatchStatus.DONE]: { text: '已完成', className: 'done' },
+      [BatchStatus.FAILED]: { text: '失败', className: 'failed' }
+    };
+    const status = statusMap[item.status];
+    const disabledAttr = this.batchRunning ? 'disabled' : '';
+
+    const metaParts = [];
+    if (item.fileSize) metaParts.push(this.formatFileSize(item.fileSize));
+    if (item.duration) metaParts.push(`${item.duration.toFixed(2)} 秒`);
+    if (item.status === BatchStatus.DONE && item.result) {
+      metaParts.push(`基频 ${item.result.fundamentalFreq.toFixed(1)} Hz`);
+    }
+
+    return `
+      <div class="batch-item status-${status.className}" data-id="${item.id}">
+        <div class="batch-item-main">
+          <span class="batch-item-name" title="${this.escapeHtml(item.fileName)}">${this.escapeHtml(this.truncateText(item.fileName, 20))}</span>
+          <span class="batch-item-badge ${status.className}">${status.text}</span>
+        </div>
+        <div class="batch-item-meta">${this.escapeHtml(metaParts.join(' · '))}</div>
+        <div class="batch-item-progress">
+          <div class="batch-item-progress-fill" style="width: ${item.progress}%"></div>
+        </div>
+        ${item.status === BatchStatus.FAILED ? `
+          <div class="batch-item-error" title="${this.escapeHtml(item.error || '')}">⚠ ${this.escapeHtml(item.error || '分析失败')}</div>
+        ` : ''}
+        <div class="batch-item-actions">
+          ${item.status === BatchStatus.DONE ? `<button class="batch-item-btn view" data-action="view" ${disabledAttr}>查看结果</button>` : ''}
+          ${item.status === BatchStatus.FAILED ? `<button class="batch-item-btn retry" data-action="retry" ${disabledAttr}>↻ 重试</button>` : ''}
+          ${item.status !== BatchStatus.ANALYZING
+            ? `<button class="batch-item-btn remove" data-action="remove" title="移除" ${disabledAttr}>✕</button>`
+            : '<span class="batch-item-spinner" title="分析中"></span>'}
+        </div>
+      </div>
+    `;
+  }
+
+  formatFileSize(bytes) {
+    if (bytes < 1024) return `${bytes} B`;
+    if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
+    return `${(bytes / 1024 / 1024).toFixed(1)} MB`;
+  }
+
+  escapeHtml(text) {
+    return String(text == null ? '' : text)
+      .replace(/&/g, '&amp;')
+      .replace(/</g, '&lt;')
+      .replace(/>/g, '&gt;')
+      .replace(/"/g, '&quot;')
+      .replace(/'/g, '&#39;');
   }
 
   bindRecordEvents() {
@@ -554,13 +980,14 @@ class App {
 
     this.currentAnalysisResult = record.analysisResult;
 
+    // 先显示图表区域再绘图，否则容器隐藏时 canvas 尺寸计算为 0（热力图无法正确绘制）
+    document.getElementById('chartContainer').style.display = 'flex';
+    document.getElementById('emptyState').style.display = 'none';
+
     const fakeAudioData = new Float32Array(1000).fill(0);
     const sampleRate = 44100;
     this.chartManager.updateAllCharts(record.analysisResult, fakeAudioData, sampleRate);
     this.updateFundamentalInfo(record.analysisResult);
-
-    document.getElementById('chartContainer').style.display = 'flex';
-    document.getElementById('emptyState').style.display = 'none';
 
     this.closeRecordModal();
     this.uiController.showToast('记录已应用', 'success');

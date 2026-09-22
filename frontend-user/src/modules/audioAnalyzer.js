@@ -15,22 +15,32 @@ export class AudioAnalyzer {
    * @param {Float32Array} audioData - 音频采样数据
    * @param {number} sampleRate - 采样率
    * @param {number} fftSize - FFT 大小
+   * @param {Function} onProgress - 可选，进度回调 (0~1)；传入后会在各阶段让出主线程，保证界面进度实时刷新
    * @returns {Object} 分析结果
    */
-  async analyze(audioData, sampleRate, fftSize = 8192) {
+  async analyze(audioData, sampleRate, fftSize = 8192, onProgress = null) {
     logger.info('开始频谱分析', { dataLength: audioData.length, sampleRate, fftSize });
 
+    // 上报进度并让出主线程（仅批量分析传入回调时生效）
+    const report = async (value) => {
+      if (typeof onProgress !== 'function') return;
+      onProgress(value);
+      await new Promise(resolve => setTimeout(resolve, 0));
+    };
+
     // 执行 FFT 分析
+    await report(0.05);
     const frequencyData = this.performFFT(audioData, fftSize);
-    
+    await report(0.35);
+
     // 计算频率分辨率
     const frequencyResolution = sampleRate / fftSize;
-    
+
     // 生成频率数组
     const frequencies = [];
     const magnitudes = [];
     const binCount = fftSize / 2;
-    
+
     for (let i = 0; i < binCount; i++) {
       const freq = i * frequencyResolution;
       if (freq > 20 && freq < 20000) { // 人耳可听范围
@@ -41,22 +51,31 @@ export class AudioAnalyzer {
 
     // 检测基频
     const fundamentalFreq = this.detectFundamentalFrequency(audioData, sampleRate, frequencies, magnitudes);
-    
+    await report(0.55);
+
     // 计算倍频 (最大13倍)
     const harmonics = this.calculateHarmonics(fundamentalFreq, 13);
-    
+
     // 过滤只保留基频和倍频附近的数据
     const filteredData = this.filterHarmonics(frequencies, magnitudes, fundamentalFreq, harmonics);
-    
+    await report(0.65);
+
     // 计算频率区域数据
     const frequencyBands = this.calculateFrequencyBands(fundamentalFreq, harmonics, filteredData);
-    
-    // 计算声强随时间变化的热力图数据
-    const heatmapData = this.calculateHeatmapData(audioData, sampleRate, fftSize, fundamentalFreq, harmonics);
+    await report(0.7);
+
+    // 计算声强随时间变化的热力图数据（最耗时的步骤，内部上报子进度）
+    const heatmapData = await this.calculateHeatmapData(
+      audioData, sampleRate, fftSize, fundamentalFreq, harmonics,
+      typeof onProgress === 'function' ? (fraction) => onProgress(0.7 + fraction * 0.25) : null
+    );
+    await report(0.95);
 
     // 找出频率范围
     const minFreq = fundamentalFreq * 0.8;
     const maxFreq = Math.min(fundamentalFreq * 13.5, 20000);
+
+    await report(1);
 
     return {
       fundamentalFreq,
@@ -347,32 +366,34 @@ export class AudioAnalyzer {
 
   /**
    * 计算热力图数据 - 声强随时间变化
+   * @param {Function} onProgress - 可选，子进度回调 (0~1)；传入后会周期性让出主线程
    */
-  calculateHeatmapData(audioData, sampleRate, fftSize, fundamentalFreq, harmonics) {
+  async calculateHeatmapData(audioData, sampleRate, fftSize, fundamentalFreq, harmonics, onProgress = null) {
     const allHarmonics = [fundamentalFreq, ...harmonics];
     const windowSize = Math.min(fftSize, 2048);
     const hopSize = windowSize / 4;
     const numFrames = Math.floor((audioData.length - windowSize) / hopSize) + 1;
-    
+
     // 限制帧数以提高性能
     const maxFrames = 100;
     const frameStep = Math.max(1, Math.floor(numFrames / maxFrames));
     const actualFrames = Math.ceil(numFrames / frameStep);
-    
+
     const heatmapData = [];
     const timeLabels = [];
     const freqLabels = allHarmonics.map((h, i) => i === 0 ? '基频' : `${i + 1}倍频`);
-    
+
+    let processedFrames = 0;
     for (let frame = 0; frame < numFrames; frame += frameStep) {
       const startSample = frame * hopSize;
       const endSample = startSample + windowSize;
-      
+
       if (endSample > audioData.length) break;
-      
+
       const frameData = audioData.slice(startSample, endSample);
       const fftResult = this.performFFT(frameData, windowSize);
       const freqResolution = sampleRate / windowSize;
-      
+
       // 提取每个谐波的能量
       const frameEnergies = allHarmonics.map(harmonic => {
         const binIndex = Math.round(harmonic / freqResolution);
@@ -381,9 +402,16 @@ export class AudioAnalyzer {
         }
         return 0;
       });
-      
+
       heatmapData.push(frameEnergies);
       timeLabels.push((startSample / sampleRate * 1000).toFixed(0));
+
+      // 周期性上报进度并让出主线程，避免批量分析时长时间阻塞界面
+      processedFrames++;
+      if (onProgress && processedFrames % 5 === 0) {
+        onProgress(Math.min(1, processedFrames / actualFrames));
+        await new Promise(resolve => setTimeout(resolve, 0));
+      }
     }
     
     // 归一化

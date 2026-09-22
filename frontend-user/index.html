@@ -98,6 +98,53 @@
           </button>
         </section>
 
+        <!-- 批量分析队列 -->
+        <section class="panel-section batch-queue-panel" id="batchQueuePanel">
+          <h2>批量分析队列</h2>
+          <div class="batch-actions">
+            <button class="btn-batch btn-batch-add" id="batchAddBtn">
+              <span class="btn-icon">📁</span>
+              添加音频
+            </button>
+            <button class="btn-batch btn-batch-start" id="batchStartBtn" disabled>
+              <span class="btn-icon">▶</span>
+              开始分析
+            </button>
+          </div>
+          <input type="file" id="batchFileInput" accept="audio/*" multiple hidden>
+          <p class="batch-hint">可一次挑选多条音频，或将多个文件拖拽到本面板；每条按完整时长、当前 FFT 精度逐条自动分析</p>
+
+          <!-- 整体进度 -->
+          <div class="batch-overall" id="batchOverall" style="display: none;">
+            <div class="batch-overall-info">
+              <span id="batchOverallText">总进度 0/0</span>
+              <span class="batch-overall-percent" id="batchOverallPercent">0%</span>
+            </div>
+            <div class="batch-progress-track">
+              <div class="batch-progress-fill" id="batchOverallFill"></div>
+            </div>
+            <div class="batch-running-status" id="batchRunningStatus" style="display: none;">
+              <span class="batch-spinner"></span>
+              <span id="batchStatusText">正在分析...</span>
+            </div>
+          </div>
+
+          <!-- 队列列表 -->
+          <div class="batch-list" id="batchList"></div>
+
+          <!-- 空队列说明 -->
+          <div class="batch-empty" id="batchEmpty">
+            <span class="empty-icon">🗂️</span>
+            <p>队列为空</p>
+            <p class="batch-empty-hint">点击"添加音频"一次挑选多条音频排入队列，点击"开始分析"后将逐条自动分析；单条失败不影响后续任务，可单独重试；中途关闭页面，队列进度与已完成的结果会自动保留。</p>
+          </div>
+
+          <div class="batch-footer" id="batchFooter" style="display: none;">
+            <button class="btn-batch-small" id="batchClearDoneBtn">清除已完成</button>
+            <button class="btn-batch-small danger" id="batchClearAllBtn">清空队列</button>
+          </div>
+        </section>
+
         <section class="panel-section" id="fundamentalInfo" style="display: none;">
           <h2>基频信息</h2>
           <div class="fundamental-display">
